@@ -1,7 +1,6 @@
 """
-Donor Matching Algorithm - Find Nearest Compatible Donors
-Calculates nearest donors to blood requests based on multiple criteria
-Enhanced with better validation and error handling
+Donor-Driven Blood Request Matching System
+Modified to show nearby requests to donors instead of finding donors for requests
 """
 
 import math
@@ -11,11 +10,9 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, date
 from enum import Enum
 
-
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 class BloodType(Enum):
     """Blood type enumeration"""
@@ -28,14 +25,12 @@ class BloodType(Enum):
     AB_NEGATIVE = "AB-"
     AB_POSITIVE = "AB+"
 
-
 class UrgencyLevel(Enum):
     """Blood request urgency levels"""
     LOW = "low"
     NORMAL = "normal"
     HIGH = "high"
     CRITICAL = "critical"
-
 
 @dataclass
 class Donor:
@@ -55,16 +50,6 @@ class Donor:
     is_active: bool = True
     created_at: Optional[datetime] = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert donor to dictionary"""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Donor':
-        """Create donor from dictionary"""
-        return cls(**data)
-
-
 @dataclass
 class BloodRequest:
     """Data class representing a blood request"""
@@ -82,51 +67,29 @@ class BloodRequest:
     required_date: str
     required_time: Optional[str] = None
     created_at: Optional[datetime] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert blood request to dictionary"""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'BloodRequest':
-        """Create blood request from dictionary"""
-        return cls(**data)
-
+    is_active: bool = True  # Added to manage active/fulfilled requests
 
 @dataclass
-class MatchResult:
-    """Data class for donor-request match results"""
-    donor: Donor
+class RequestMatch:
+    """Data class for request-donor match results (flipped perspective)"""
     request: BloodRequest
+    donor: Donor
     distance_km: float
     compatibility_score: float
     is_blood_compatible: bool
     is_date_compatible: bool
     urgency_priority: int
     overall_score: float
+    can_donate_safely: bool  # New field for donor safety check
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert match result to dictionary"""
-        return {
-            'donor': self.donor.to_dict(),
-            'request': self.request.to_dict(),
-            'distance_km': self.distance_km,
-            'compatibility_score': self.compatibility_score,
-            'is_blood_compatible': self.is_blood_compatible,
-            'is_date_compatible': self.is_date_compatible,
-            'urgency_priority': self.urgency_priority,
-            'overall_score': self.overall_score
-        }
-
-
-class DonorMatchingEngine:
+class DonorDrivenMatchingEngine:
     """
-    Engine for matching blood donors with requests based on proximity and compatibility
+    Engine for showing compatible blood requests to donors based on their location and blood type
     """
     
     def __init__(self):
         """Initialize the matching engine"""
-        self.blood_compatibility_matrix = self._build_compatibility_matrix()
+        self.donor_compatibility_matrix = self._build_donor_compatibility_matrix()
         self.urgency_weights = {
             UrgencyLevel.CRITICAL: 4.0,
             UrgencyLevel.HIGH: 3.0,
@@ -134,10 +97,10 @@ class DonorMatchingEngine:
             UrgencyLevel.LOW: 1.0
         }
     
-    def _build_compatibility_matrix(self) -> Dict[str, List[str]]:
+    def _build_donor_compatibility_matrix(self) -> Dict[str, List[str]]:
         """
-        Build blood type compatibility matrix
-        Returns dict where keys are donor blood types and values are compatible recipient types
+        Build compatibility matrix from donor perspective
+        Returns dict where keys are donor blood types and values are patient types they can help
         """
         return {
             "O-": ["O-", "O+", "A-", "A+", "B-", "B+", "AB-", "AB+"],  # Universal donor
@@ -151,41 +114,16 @@ class DonorMatchingEngine:
         }
     
     def validate_coordinates(self, latitude: float, longitude: float) -> bool:
-        """
-        Validate coordinates are within valid ranges
-        
-        Args:
-            latitude: Latitude value
-            longitude: Longitude value
-            
-        Returns:
-            bool: True if coordinates are valid
-        """
+        """Validate coordinates are within valid ranges"""
         return (-90 <= latitude <= 90) and (-180 <= longitude <= 180)
     
     def validate_blood_group(self, blood_group: str) -> bool:
-        """
-        Validate blood group format
-        
-        Args:
-            blood_group: Blood group string
-            
-        Returns:
-            bool: True if blood group is valid
-        """
+        """Validate blood group format"""
         valid_groups = ["O+", "O-", "A+", "A-", "B+", "B-", "AB+", "AB-"]
         return blood_group in valid_groups
     
     def validate_date(self, date_string: str) -> bool:
-        """
-        Validate date format
-        
-        Args:
-            date_string: Date in YYYY-MM-DD format
-            
-        Returns:
-            bool: True if date format is valid
-        """
+        """Validate date format"""
         try:
             datetime.strptime(date_string, "%Y-%m-%d")
             return True
@@ -193,17 +131,7 @@ class DonorMatchingEngine:
             return False
     
     def calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """
-        Calculate distance between two coordinates using Haversine formula
-        
-        Args:
-            lat1, lon1: Latitude and longitude of first point
-            lat2, lon2: Latitude and longitude of second point
-            
-        Returns:
-            float: Distance in kilometers
-        """
-        # Validate coordinates
+        """Calculate distance between two coordinates using Haversine formula"""
         if not all([self.validate_coordinates(lat1, lon1), self.validate_coordinates(lat2, lon2)]):
             raise ValueError("Invalid coordinates provided")
         
@@ -226,77 +154,85 @@ class DonorMatchingEngine:
         
         return R * c
     
-    def is_blood_compatible(self, donor_blood: str, patient_blood: str) -> bool:
+    def can_donor_help_patient(self, donor_blood: str, patient_blood: str) -> bool:
         """
-        Check if donor blood type is compatible with patient blood type
-        
-        Args:
-            donor_blood: Donor's blood type
-            patient_blood: Patient's blood type
-            
-        Returns:
-            bool: True if compatible, False otherwise
+        Check if donor can safely donate to patient
         """
         if not (self.validate_blood_group(donor_blood) and self.validate_blood_group(patient_blood)):
             logger.warning(f"Invalid blood groups: donor={donor_blood}, patient={patient_blood}")
             return False
         
-        return patient_blood in self.blood_compatibility_matrix.get(donor_blood, [])
+        return patient_blood in self.donor_compatibility_matrix.get(donor_blood, [])
     
-    def is_date_compatible(self, donor_available_date: str, required_date: str) -> bool:
+    def is_donor_eligible_to_donate(self, donor: Donor, required_date: str) -> Tuple[bool, str]:
         """
-        Check if donor is available on or before required date
-        
-        Args:
-            donor_available_date: Donor's available date (YYYY-MM-DD)
-            required_date: Required donation date (YYYY-MM-DD)
-            
-        Returns:
-            bool: True if donor is available, False otherwise
+        Check if donor is eligible to donate based on last donation date and availability
         """
+        # Check if donor is available on required date
         try:
-            if not (self.validate_date(donor_available_date) and self.validate_date(required_date)):
-                return False
+            if not (self.validate_date(donor.available_date) and self.validate_date(required_date)):
+                return False, "Invalid date format"
             
-            donor_date = datetime.strptime(donor_available_date, "%Y-%m-%d").date()
+            donor_date = datetime.strptime(donor.available_date, "%Y-%m-%d").date()
             req_date = datetime.strptime(required_date, "%Y-%m-%d").date()
-            return donor_date <= req_date
-        except ValueError as e:
-            logger.error(f"Date validation error: {e}")
-            return False
-    
-    def calculate_compatibility_score(self, donor: Donor, request: BloodRequest) -> float:
-        """
-        Calculate compatibility score based on multiple factors
-        
-        Args:
-            donor: Donor object
-            request: BloodRequest object
             
-        Returns:
-            float: Compatibility score (0-100)
+            if donor_date > req_date:
+                return False, "Donor not available by required date"
+            
+        except ValueError:
+            return False, "Date parsing error"
+        
+        # Check donation interval (56 days minimum between donations)
+        if donor.last_donation_date:
+            try:
+                last_donation = datetime.strptime(donor.last_donation_date, "%Y-%m-%d").date()
+                days_since_donation = (date.today() - last_donation).days
+                
+                if days_since_donation < 56:
+                    days_remaining = 56 - days_since_donation
+                    return False, f"Must wait {days_remaining} more days since last donation"
+                    
+            except ValueError:
+                pass  # If date is invalid, assume eligible
+        
+        return True, "Eligible to donate"
+    
+    def calculate_request_appeal_score(self, donor: Donor, request: BloodRequest) -> float:
+        """
+        Calculate how appealing a request should be to a donor
         """
         score = 0.0
         
         try:
             # Blood compatibility (40 points max)
-            if self.is_blood_compatible(donor.blood_group, request.blood_group):
+            if self.can_donor_help_patient(donor.blood_group, request.blood_group):
                 score += 40.0
+                # Bonus for being able to help rare blood types
+                if request.blood_group in ["AB-", "AB+", "O-"]:
+                    score += 5.0
                 # Bonus for exact blood type match
                 if donor.blood_group == request.blood_group:
                     score += 5.0
             
-            # Date compatibility (25 points max)
-            if self.is_date_compatible(donor.available_date, request.required_date):
-                score += 25.0
+            # Urgency factor (25 points max)
+            try:
+                urgency_level = UrgencyLevel(request.urgency.lower())
+                urgency_multiplier = self.urgency_weights[urgency_level]
+                score += urgency_multiplier * 6.25  # Scale to 25 points max
+            except (ValueError, KeyError):
+                score += 12.5  # Default normal urgency
+            
+            # Date compatibility (20 points max)
+            eligible, _ = self.is_donor_eligible_to_donate(donor, request.required_date)
+            if eligible:
+                score += 20.0
                 
-                # Calculate days difference for bonus scoring
+                # Bonus for immediate availability
                 try:
                     donor_date = datetime.strptime(donor.available_date, "%Y-%m-%d").date()
                     req_date = datetime.strptime(request.required_date, "%Y-%m-%d").date()
                     days_diff = (req_date - donor_date).days
                     
-                    # Bonus for immediate availability
                     if days_diff <= 1:
                         score += 10.0
                     elif days_diff <= 3:
@@ -304,344 +240,253 @@ class DonorMatchingEngine:
                 except ValueError:
                     pass
             
-            # Active status (15 points max)
-            if donor.is_active:
-                score += 15.0
-            
-            # Recent donation check (10 points max)
-            if donor.last_donation_date:
-                try:
-                    last_donation = datetime.strptime(donor.last_donation_date, "%Y-%m-%d").date()
-                    days_since_donation = (date.today() - last_donation).days
-                    
-                    # Donors should wait at least 56 days between donations
-                    if days_since_donation >= 56:
-                        score += 10.0
-                    elif days_since_donation >= 42:  # Partial eligibility
-                        score += 5.0
-                except ValueError:
-                    score += 10.0  # No previous donation record
+            # Units needed factor (15 points max)
+            if request.units_needed == 1:
+                score += 15.0  # Standard single unit
+            elif request.units_needed == 2:
+                score += 10.0  # Common double unit
             else:
-                score += 10.0  # First-time donor
+                score += 5.0   # Multiple units (may require multiple donors)
             
         except Exception as e:
-            logger.error(f"Error calculating compatibility score: {e}")
+            logger.error(f"Error calculating appeal score: {e}")
             return 0.0
         
         return min(score, 100.0)  # Cap at 100
     
     def calculate_urgency_priority(self, urgency: str) -> int:
-        """
-        Calculate urgency priority score
-        
-        Args:
-            urgency: Urgency level string
-            
-        Returns:
-            int: Priority score (1-4)
-        """
+        """Calculate urgency priority score"""
         try:
             urgency_enum = UrgencyLevel(urgency.lower())
             return int(self.urgency_weights[urgency_enum])
         except (ValueError, KeyError):
             logger.warning(f"Invalid urgency level: {urgency}, defaulting to normal")
-            return 2  # Default to normal priority
+            return 2
     
-    def calculate_overall_score(self, distance: float, compatibility_score: float, 
-                              urgency_priority: int, max_distance: float = 100.0) -> float:
+    def calculate_overall_appeal_score(self, distance: float, appeal_score: float, 
+                                     urgency_priority: int, max_distance: float = 50.0) -> float:
         """
-        Calculate overall matching score combining distance, compatibility, and urgency
-        
-        Args:
-            distance: Distance in kilometers
-            compatibility_score: Compatibility score (0-100)
-            urgency_priority: Urgency priority (1-4)
-            max_distance: Maximum distance for scoring
-            
-        Returns:
-            float: Overall score (0-100)
+        Calculate overall appeal score for a request from donor's perspective
         """
         try:
-            # Distance score (closer is better)
+            # Distance score (closer requests are more appealing)
             if distance <= max_distance:
-                distance_score = (max_distance - distance) / max_distance * 40.0
+                distance_score = (max_distance - distance) / max_distance * 30.0
             else:
                 distance_score = 0.0
             
-            # Compatibility score (0-40 points)
-            compatibility_points = compatibility_score * 0.4
+            # Appeal score (0-50 points)
+            appeal_points = appeal_score * 0.5
             
-            # Urgency multiplier (1.0 to 2.0)
-            urgency_multiplier = 1.0 + (urgency_priority - 1) * 0.25
+            # Urgency multiplier (critical cases get priority)
+            urgency_multiplier = 1.0 + (urgency_priority - 1) * 0.2
             
             # Base score
-            base_score = distance_score + compatibility_points
+            base_score = distance_score + appeal_points
             
             # Apply urgency multiplier
             final_score = min(base_score * urgency_multiplier, 100.0)
             
             return final_score
         except Exception as e:
-            logger.error(f"Error calculating overall score: {e}")
+            logger.error(f"Error calculating overall appeal score: {e}")
             return 0.0
     
-    def find_nearest_donors(self, request: BloodRequest, donors: List[Donor], 
-                           max_distance: float = 50.0, max_results: int = 10) -> List[MatchResult]:
+    def find_nearby_requests_for_donor(self, donor: Donor, requests: List[BloodRequest], 
+                                     max_distance: float = 30.0, max_results: int = 10) -> List[RequestMatch]:
         """
-        Find nearest compatible donors for a blood request
+        Find nearby compatible blood requests for a specific donor
         
         Args:
-            request: BloodRequest object
-            donors: List of available donors
-            max_distance: Maximum search distance in kilometers
+            donor: The donor looking for requests to help with
+            requests: List of active blood requests
+            max_distance: Maximum search distance in kilometers  
             max_results: Maximum number of results to return
             
         Returns:
-            List[MatchResult]: Sorted list of matching donors
+            List[RequestMatch]: Sorted list of compatible requests
         """
-        if not request or not donors:
-            logger.warning("Missing request or donors data")
+        if not donor or not requests:
+            logger.warning("Missing donor or requests data")
+            return []
+        
+        if not donor.is_active:
+            logger.warning(f"Donor {donor.id} is not active")
             return []
         
         matches = []
         
         try:
-            for donor in donors:
-                # Skip inactive donors
-                if not donor.is_active:
+            for request in requests:
+                # Skip inactive/fulfilled requests
+                if not request.is_active:
                     continue
                 
-                # Validate donor data
-                if not (self.validate_coordinates(donor.latitude, donor.longitude) and
-                        self.validate_blood_group(donor.blood_group) and
-                        self.validate_date(donor.available_date)):
-                    logger.warning(f"Invalid donor data for donor {donor.id}")
+                # Validate request data
+                if not (self.validate_coordinates(request.latitude, request.longitude) and
+                        self.validate_blood_group(request.blood_group) and
+                        self.validate_date(request.required_date)):
+                    logger.warning(f"Invalid request data for request {request.id}")
                     continue
                 
                 # Calculate distance
                 try:
                     distance = self.calculate_distance(
-                        request.latitude, request.longitude,
-                        donor.latitude, donor.longitude
+                        donor.latitude, donor.longitude,
+                        request.latitude, request.longitude
                     )
                 except ValueError as e:
-                    logger.error(f"Distance calculation failed for donor {donor.id}: {e}")
+                    logger.error(f"Distance calculation failed for request {request.id}: {e}")
                     continue
                 
-                # Skip donors beyond max distance
+                # Skip requests beyond max distance
                 if distance > max_distance:
                     continue
                 
-                # Calculate compatibility score
-                compatibility_score = self.calculate_compatibility_score(donor, request)
+                # Check if donor can help this patient
+                can_help = self.can_donor_help_patient(donor.blood_group, request.blood_group)
+                if not can_help:
+                    continue  # Skip incompatible requests
                 
-                # Check blood compatibility
-                blood_compatible = self.is_blood_compatible(donor.blood_group, request.blood_group)
+                # Check if donor is eligible to donate
+                eligible, eligibility_reason = self.is_donor_eligible_to_donate(donor, request.required_date)
                 
-                # Check date compatibility
-                date_compatible = self.is_date_compatible(donor.available_date, request.required_date)
-                
-                # Skip if blood type is not compatible
-                if not blood_compatible:
-                    continue
+                # Calculate appeal score
+                appeal_score = self.calculate_request_appeal_score(donor, request)
                 
                 # Calculate urgency priority
                 urgency_priority = self.calculate_urgency_priority(request.urgency)
                 
-                # Calculate overall score
-                overall_score = self.calculate_overall_score(
-                    distance, compatibility_score, urgency_priority, max_distance
+                # Calculate overall appeal score
+                overall_score = self.calculate_overall_appeal_score(
+                    distance, appeal_score, urgency_priority, max_distance
                 )
                 
                 # Create match result
-                match = MatchResult(
-                    donor=donor,
+                match = RequestMatch(
                     request=request,
+                    donor=donor,
                     distance_km=round(distance, 2),
-                    compatibility_score=round(compatibility_score, 2),
-                    is_blood_compatible=blood_compatible,
-                    is_date_compatible=date_compatible,
+                    compatibility_score=round(appeal_score, 2),
+                    is_blood_compatible=can_help,
+                    is_date_compatible=eligible,
                     urgency_priority=urgency_priority,
-                    overall_score=round(overall_score, 2)
+                    overall_score=round(overall_score, 2),
+                    can_donate_safely=eligible
                 )
                 
                 matches.append(match)
         
         except Exception as e:
-            logger.error(f"Error in find_nearest_donors: {e}")
+            logger.error(f"Error in find_nearby_requests_for_donor: {e}")
             return []
         
-        # Sort by overall score (highest first), then by distance (nearest first)
-        matches.sort(key=lambda x: (-x.overall_score, x.distance_km))
+        # Sort by overall score (highest first), then by urgency (critical first), then by distance (nearest first)
+        matches.sort(key=lambda x: (-x.overall_score, -x.urgency_priority, x.distance_km))
         
         return matches[:max_results]
     
-    def find_donors_by_blood_group(self, blood_group: str, donors: List[Donor]) -> List[Donor]:
+    def get_donor_dashboard_summary(self, donor: Donor, requests: List[BloodRequest]) -> Dict[str, Any]:
         """
-        Find all donors with compatible blood types for a specific blood group
-        
-        Args:
-            blood_group: Required blood group
-            donors: List of all donors
-            
-        Returns:
-            List[Donor]: Compatible donors
+        Get summary information for donor dashboard
         """
-        if not self.validate_blood_group(blood_group):
-            logger.error(f"Invalid blood group: {blood_group}")
-            return []
-        
-        compatible_donors = []
-        
-        for donor in donors:
-            if (donor.is_active and 
-                self.validate_blood_group(donor.blood_group) and
-                self.is_blood_compatible(donor.blood_group, blood_group)):
-                compatible_donors.append(donor)
-        
-        return compatible_donors
-    
-    def find_donors_in_radius(self, center_lat: float, center_lon: float, 
-                             donors: List[Donor], radius_km: float = 25.0) -> List[Tuple[Donor, float]]:
-        """
-        Find all donors within a specific radius from a center point
-        
-        Args:
-            center_lat: Center latitude
-            center_lon: Center longitude
-            donors: List of donors
-            radius_km: Search radius in kilometers
-            
-        Returns:
-            List[Tuple[Donor, float]]: List of (donor, distance) tuples sorted by distance
-        """
-        if not self.validate_coordinates(center_lat, center_lon):
-            logger.error("Invalid center coordinates")
-            return []
-        
-        donors_in_radius = []
-        
-        for donor in donors:
-            if not (donor.is_active and self.validate_coordinates(donor.latitude, donor.longitude)):
-                continue
-            
-            try:
-                distance = self.calculate_distance(center_lat, center_lon, donor.latitude, donor.longitude)
-                if distance <= radius_km:
-                    donors_in_radius.append((donor, round(distance, 2)))
-            except ValueError:
-                continue
-        
-        # Sort by distance
-        donors_in_radius.sort(key=lambda x: x[1])
-        
-        return donors_in_radius
-    
-    def get_matching_statistics(self, matches: List[MatchResult]) -> Dict[str, Any]:
-        """
-        Get statistics about matching results
-        
-        Args:
-            matches: List of match results
-            
-        Returns:
-            dict: Statistics dictionary
-        """
-        if not matches:
-            return {"total_matches": 0}
-        
         try:
-            distances = [match.distance_km for match in matches]
-            scores = [match.overall_score for match in matches]
-            blood_groups = [match.donor.blood_group for match in matches]
+            # Find all nearby requests (within larger radius for summary)
+            nearby_matches = self.find_nearby_requests_for_donor(donor, requests, max_distance=50.0, max_results=50)
+            
+            # Categorize by urgency
+            critical_requests = [m for m in nearby_matches if m.request.urgency == 'critical']
+            high_requests = [m for m in nearby_matches if m.request.urgency == 'high']
+            normal_requests = [m for m in nearby_matches if m.request.urgency == 'normal']
+            
+            # Check eligibility
+            eligible, eligibility_reason = self.is_donor_eligible_to_donate(donor, date.today().strftime("%Y-%m-%d"))
             
             return {
-                "total_matches": len(matches),
-                "average_distance": round(sum(distances) / len(distances), 2),
-                "min_distance": min(distances),
-                "max_distance": max(distances),
-                "average_score": round(sum(scores) / len(scores), 2),
-                "blood_group_distribution": {bg: blood_groups.count(bg) for bg in set(blood_groups)},
-                "date_compatible_count": sum(1 for match in matches if match.is_date_compatible)
+                "donor_id": donor.id,
+                "donor_name": donor.full_name,
+                "is_eligible": eligible,
+                "eligibility_reason": eligibility_reason,
+                "total_nearby_requests": len(nearby_matches),
+                "critical_requests": len(critical_requests),
+                "high_priority_requests": len(high_requests),
+                "normal_requests": len(normal_requests),
+                "closest_request_distance": nearby_matches[0].distance_km if nearby_matches else None,
+                "blood_types_you_can_help": self.donor_compatibility_matrix.get(donor.blood_group, []),
+                "next_available_date": donor.available_date
             }
         except Exception as e:
-            logger.error(f"Error calculating statistics: {e}")
-            return {"total_matches": 0, "error": str(e)}
-
+            logger.error(f"Error getting donor dashboard summary: {e}")
+            return {"error": str(e)}
 
 def example_usage():
-    """Demonstrate the donor matching algorithm"""
+    """Demonstrate the donor-driven matching system"""
     
-    # Create sample donors
-    donors = [
-        Donor(
-            id="D001", full_name="John Doe", email="john@email.com", phone="+1234567890",
-            blood_group="O+", latitude=19.0760, longitude=72.8777,
-            location_text="Mumbai, Maharashtra", formatted_address="Mumbai, Maharashtra, India",
-            available_date="2024-03-15", available_time="09:00-17:00", is_active=True
+    # Create sample blood requests (these would come from hospitals)
+    requests = [
+        BloodRequest(
+            id="R001", patient_name="Emergency Patient A", contact_email="hospital1@kem.com",
+            contact_phone="+912234567890", blood_group="A+", hospital_name="KEM Hospital",
+            latitude=18.9894, longitude=72.8318, hospital_address="KEM Hospital, Parel, Mumbai",
+            urgency="critical", units_needed=2, required_date="2024-03-16", is_active=True
         ),
-        Donor(
-            id="D002", full_name="Jane Smith", email="jane@email.com", phone="+1234567891",
-            blood_group="A+", latitude=19.1136, longitude=72.8697,
-            location_text="Andheri, Mumbai", formatted_address="Andheri West, Mumbai, Maharashtra, India",
-            available_date="2024-03-16", available_time="10:00-16:00", is_active=True
+        BloodRequest(
+            id="R002", patient_name="Surgery Patient B", contact_email="hospital2@lilavati.com",
+            contact_phone="+912234567891", blood_group="O+", hospital_name="Lilavati Hospital",
+            latitude=19.0596, longitude=72.8295, hospital_address="Lilavati Hospital, Bandra, Mumbai",
+            urgency="high", units_needed=1, required_date="2024-03-17", is_active=True
         ),
-        Donor(
-            id="D003", full_name="Mike Johnson", email="mike@email.com", phone="+1234567892",
-            blood_group="O-", latitude=19.0970, longitude=72.9036,
-            location_text="Powai, Mumbai", formatted_address="Powai, Mumbai, Maharashtra, India",
-            available_date="2024-03-14", available_time="08:00-18:00", is_active=True,
-            last_donation_date="2023-12-01"
-        ),
-        Donor(
-            id="D004", full_name="Sarah Wilson", email="sarah@email.com", phone="+1234567893",
-            blood_group="B+", latitude=18.9220, longitude=72.8347,
-            location_text="Worli, Mumbai", formatted_address="Worli, Mumbai, Maharashtra, India",
-            available_date="2024-03-20", available_time="11:00-15:00", is_active=True
+        BloodRequest(
+            id="R003", patient_name="Routine Patient C", contact_email="hospital3@hinduja.com",
+            contact_phone="+912234567892", blood_group="AB+", hospital_name="Hinduja Hospital",
+            latitude=19.0596, longitude=72.8295, hospital_address="Hinduja Hospital, Mahim, Mumbai",
+            urgency="normal", units_needed=1, required_date="2024-03-20", is_active=True
         )
     ]
     
-    # Create sample blood request
-    request = BloodRequest(
-        id="R001", patient_name="Emergency Patient", contact_email="hospital@kem.com",
-        contact_phone="+1234567894", blood_group="A+", hospital_name="KEM Hospital",
-        latitude=18.9894, longitude=72.8318, hospital_address="KEM Hospital, Parel, Mumbai",
-        urgency="high", units_needed=2, required_date="2024-03-16"
+    # Create a sample donor
+    donor = Donor(
+        id="D001", full_name="John Doe", email="john.doe@email.com", phone="+912234567893",
+        blood_group="O+", latitude=19.0760, longitude=72.8777,
+        location_text="Mumbai, Maharashtra", formatted_address="Mumbai, Maharashtra, India",
+        available_date="2024-03-15", available_time="09:00-17:00", is_active=True
     )
     
     # Initialize matching engine
-    matcher = DonorMatchingEngine()
+    matcher = DonorDrivenMatchingEngine()
     
-    print("=== Donor Matching Algorithm Demo ===\n")
+    print("=== Donor-Driven Blood Request Matching Demo ===\n")
     
-    # Find nearest donors
-    print(f"Finding donors for patient: {request.patient_name}")
-    print(f"Blood group needed: {request.blood_group}")
-    print(f"Hospital: {request.hospital_name}")
-    print(f"Urgency: {request.urgency}")
-    print(f"Required date: {request.required_date}")
+    # Get donor dashboard summary
+    print(f"Dashboard Summary for {donor.full_name} ({donor.blood_group}):")
+    summary = matcher.get_donor_dashboard_summary(donor, requests)
+    for key, value in summary.items():
+        print(f"{key}: {value}")
     print()
     
-    matches = matcher.find_nearest_donors(request, donors, max_distance=50.0, max_results=10)
+    # Find nearby requests for the donor
+    print(f"Nearby Blood Requests for {donor.full_name}:")
+    matches = matcher.find_nearby_requests_for_donor(donor, requests, max_distance=30.0, max_results=10)
     
-    print(f"Found {len(matches)} compatible donors:\n")
-    
-    for i, match in enumerate(matches, 1):
-        print(f"{i}. {match.donor.full_name} ({match.donor.blood_group})")
-        print(f"   Distance: {match.distance_km} km")
-        print(f"   Overall Score: {match.overall_score}")
-        print(f"   Compatibility Score: {match.compatibility_score}")
-        print(f"   Available: {match.donor.available_date} ({match.donor.available_time})")
-        print(f"   Contact: {match.donor.email}, {match.donor.phone}")
-        print(f"   Address: {match.donor.formatted_address}")
-        print()
-    
-    # Show statistics
-    stats = matcher.get_matching_statistics(matches)
-    print("=== Matching Statistics ===")
-    for key, value in stats.items():
-        print(f"{key}: {value}")
-
+    if not matches:
+        print("No compatible requests found nearby.")
+    else:
+        print(f"Found {len(matches)} requests you can help with:\n")
+        
+        for i, match in enumerate(matches, 1):
+            request = match.request
+            print(f"{i}. Patient: {request.patient_name}")
+            print(f"   Blood Group Needed: {request.blood_group}")
+            print(f"   Hospital: {request.hospital_name}")
+            print(f"   Distance: {match.distance_km} km from you")
+            print(f"   Urgency: {request.urgency.upper()}")
+            print(f"   Units Needed: {request.units_needed}")
+            print(f"   Required Date: {request.required_date}")
+            print(f"   Appeal Score: {match.overall_score}/100")
+            print(f"   Can Donate Safely: {'Yes' if match.can_donate_safely else 'No'}")
+            print(f"   Contact: {request.contact_email}, {request.contact_phone}")
+            print(f"   Hospital Address: {request.hospital_address}")
+            print()
 
 if __name__ == "__main__":
     example_usage()
